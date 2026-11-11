@@ -12,3 +12,81 @@ library(purrr)
 library(leaflet)
 library(jsonlite)
 ```
+
+```{r}
+raw <- jsonlite::read_json("data/wildfires.geojson")
+length(raw$features)
+```
+
+```{r}
+first_fire <- raw$features[[1]]
+names(first_fire)
+unlist(first_fire$geometry$coordinates[[1]][[1]])
+```
+
+```{r}
+#| cache: true
+fires <- tibble(features = raw$features) |>
+  unnest_wider(features) |>
+  unnest_wider(properties) |>
+  unnest_wider(geometry, names_sep = "_") |>
+  select(incident, gis_acres, fire_year, agency, state, geometry_coordinates) |>
+  mutate(
+    gis_acres = as.numeric(gis_acres),
+    fire_year = as.integer(fire_year)
+  )
+```
+
+```{r}
+august_fires <- fires |> filter(str_detect(incident, regex("August", ignore_case = TRUE)))
+nrow(august_fires)
+
+fires |> slice_max(gis_acres, n = 10)
+```
+
+```{r}
+big_fires <- fires |>
+  filter(gis_acres >= 100000) |>
+  mutate(
+    lon = map_dbl(geometry_coordinates, \(rings) {
+      mean(map_dbl(rings[[1]], 1))
+    }),
+    lat = map_dbl(geometry_coordinates, \(rings) {
+      mean(map_dbl(rings[[1]], 2))
+    })
+  )
+
+```
+
+```{r}
+top_fires <- big_fires |> slice_max(gis_acres, n = 10, with_ties = FALSE) |>
+  mutate(
+    popup_text = paste0(
+      "<strong>", incident, "</strong><br>",
+      fire_year, "<br>",
+      scales::comma(gis_acres), " acres"
+    )
+  )
+
+top_fires_sf <- sf::st_sf(
+  top_fires,
+  geometry = sf::st_sfc(
+    map(
+      top_fires$geometry_coordinates,
+      \(rings) sf::st_polygon(map(rings, \(ring) do.call(rbind, map(ring, unlist))))
+    ),
+    crs = 4326
+  )
+)
+fire_bounds <- sf::st_bbox(top_fires_sf)
+
+leaflet(top_fires_sf) |>
+  addTiles() |>
+  addPolygons(popup = ~popup_text) |>
+  fitBounds(
+    lng1 = fire_bounds[["xmin"]],
+    lat1 = fire_bounds[["ymin"]],
+    lng2 = fire_bounds[["xmax"]],
+    lat2 = fire_bounds[["ymax"]]
+  )
+```
